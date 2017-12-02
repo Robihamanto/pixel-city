@@ -22,5 +22,4 @@ MVC (Model, View, Controller)
 - Open the xcworkspace
 
 ## Preview
-
-![aaaa](./preview/pixel-city.gif)
+<img src="./preview/pixel-city.gif" alt="alt text" width="260px" height="480px">
