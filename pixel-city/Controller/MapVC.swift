@@ -31,6 +31,7 @@ class MapVC: UIViewController, UIGestureRecognizerDelegate {
     var photosCollectionView: UICollectionView?
     
     var imageUrlArray = [String]()
+    var imageArray = [UIImage]()
     
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -44,7 +45,9 @@ class MapVC: UIViewController, UIGestureRecognizerDelegate {
         photosCollectionView?.register(PhotoCell.self, forCellWithReuseIdentifier: "photoCell")
         photosCollectionView?.delegate = self
         photosCollectionView?.dataSource = self
-        photosCollectionView?.backgroundColor = #colorLiteral(red: 0.2392156869, green: 0.6745098233, blue: 0.9686274529, alpha: 1)
+        photosCollectionView?.backgroundColor = #colorLiteral(red: 0.9647058824, green: 0.6509803922, blue: 0.137254902, alpha: 1)
+        
+        registerForPreviewing(with: self, sourceView: photosCollectionView!)
         
         pullUpView.addSubview(photosCollectionView!)
     }
@@ -70,6 +73,7 @@ class MapVC: UIViewController, UIGestureRecognizerDelegate {
     }
     
     @objc func animatedViewDown() {
+        cancelAllSession()
         self.pullUpHeightConstraint.constant = 0
         UIView.animate(withDuration: 0.3) {
             self.view.layoutIfNeeded()
@@ -93,11 +97,10 @@ class MapVC: UIViewController, UIGestureRecognizerDelegate {
     
     func addProgressLabel() {
         progressLabel = UILabel()
-        progressLabel?.frame = CGRect(x: (screenSize.width / 2) - 100, y: 175, width: 250, height: 40)
-        progressLabel?.font = UIFont(name: "Helvetica Neue", size: 18)
+        progressLabel?.frame = CGRect(x: (screenSize.width / 2) - 125, y: 175, width: 250, height: 40)
+        progressLabel?.font = UIFont(name: "Helvetica Neue", size: 15)
         progressLabel?.textColor = #colorLiteral(red: 0.501960814, green: 0.501960814, blue: 0.501960814, alpha: 1)
         progressLabel?.textAlignment = .center
-        progressLabel?.text = "12/25 PHOTOS LOADED"
         photosCollectionView?.addSubview(progressLabel!)
     }
     
@@ -139,6 +142,12 @@ extension MapVC: MKMapViewDelegate {
         removePin()
         removeSpinner()
         removeProgressLabel()
+        cancelAllSession()
+        
+        imageUrlArray = []
+        imageArray = []
+        
+        self.photosCollectionView?.reloadData()
         
         animatedViewUp()
         addSpinner()
@@ -153,7 +162,16 @@ extension MapVC: MKMapViewDelegate {
         let coordinateRegion = MKCoordinateRegionMakeWithDistance(touchCoordinate, regionRadius * 2.0, regionRadius * 2.0)
         mapView.setRegion(coordinateRegion, animated: true)
         
-        retrieveUrls(forAnnotation: annotation) { (true) in
+        retrieveUrls(forAnnotation: annotation) { (finished) in
+            if finished {
+                self.retrieveImages(handler: { (finished) in
+                    if finished {
+                        self.removeSpinner()
+                        self.removeProgressLabel()
+                        self.photosCollectionView?.reloadData()
+                    }
+                })
+            }
         }
     }
     
@@ -164,11 +182,35 @@ extension MapVC: MKMapViewDelegate {
     }
     
     func retrieveUrls(forAnnotation annotation: DroppablePin, handler: @escaping (_ status: Bool) -> ()) {
-        imageUrlArray = []
-        
         Alamofire.request(flickrUrl(forApiKey: apiKey, withAnnotation: annotation, andNumberOfPhotos: 40)).responseJSON { (response) in
-            guard let json = response.result.value as Dictionary<String, AnyObject> else { return }
-            
+            guard let json = response.result.value as? Dictionary<String, AnyObject> else { return }
+            let photosDict = json["photos"] as! Dictionary<String, AnyObject>
+            let photosDictArray = photosDict["photo"] as! [Dictionary<String, AnyObject>]
+            for photo in photosDictArray {
+                let postUrl = "https://farm\(photo["farm"]!).staticflickr.com/\(photo["server"]!)/\(photo["id"]!)_\(photo["secret"]!)_h_d.jpg"
+                self.imageUrlArray.append(postUrl)
+            }
+            handler(true)
+        }
+    }
+    
+    func retrieveImages(handler: @escaping(_ status: Bool) -> ()) {
+        for url in imageUrlArray {
+            Alamofire.request(url).responseImage(completionHandler: { (response) in
+                guard let image = response.result.value else { return }
+                self.imageArray.append(image)
+                self.progressLabel?.text = "\(self.imageArray.count)/\(self.imageUrlArray.count) IMAGE LOADED"
+                if self.imageArray.count == self.imageUrlArray.count {
+                    handler(true)
+                }
+            })
+        }
+    }
+    
+    func cancelAllSession() {
+        Alamofire.SessionManager.default.session.getTasksWithCompletionHandler { (sessionDataTask, uploadData, downloadData) in
+            sessionDataTask.forEach({ $0.cancel() })
+            downloadData.forEach({ $0.cancel() })
         }
     }
     
@@ -195,15 +237,48 @@ extension MapVC: UICollectionViewDelegate, UICollectionViewDataSource {
     }
     
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
-        return 4
+        return imageArray.count
     }
     
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
         if let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "photoCell", for: indexPath) as? PhotoCell {
+            let imageFromIndex = imageArray[indexPath.row]
+            let imageView = UIImageView(image: imageFromIndex)
+            cell.addSubview(imageView)
             return cell
         }
         return PhotoCell()
     }
     
+    func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+        guard let popVC = storyboard?.instantiateViewController(withIdentifier: "PopVC") as? PopVC else { return }
+        popVC.initData(forImage: imageArray[indexPath.row])
+        present(popVC, animated: true, completion: nil)
+    }
+}
+
+extension MapVC: UIViewControllerPreviewingDelegate{
+    func previewingContext(_ previewingContext: UIViewControllerPreviewing, viewControllerForLocation location: CGPoint) -> UIViewController? {
+        guard let indexPath = photosCollectionView?.indexPathForItem(at: location), let cell = photosCollectionView?.cellForItem(at: indexPath) else { return nil}
+        
+        guard let popVC = storyboard?.instantiateViewController(withIdentifier: "PopVC") as? PopVC else { return nil }
+        
+        popVC.initData(forImage: imageArray[indexPath.row])
+        
+        previewingContext.sourceRect = cell.contentView.frame
+        return popVC
+    }
+    
+    func previewingContext(_ previewingContext: UIViewControllerPreviewing, commit viewControllerToCommit: UIViewController) {
+        show(viewControllerToCommit, sender: self)
+    }
+    
     
 }
+
+
+
+
+
+
+
